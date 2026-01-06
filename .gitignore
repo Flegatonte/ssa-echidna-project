@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# echidna
+crytic-export/
+
+# editor
+.vscode/
+
+# pdf temporanei
+*.aux
+*.log
