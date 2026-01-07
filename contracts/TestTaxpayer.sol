@@ -11,7 +11,12 @@ interface ITaxpayerView {
 
 contract TestTaxpayer is Taxpayer {
     Taxpayer internal other; // "the spouse" we can point to
+
+    // memory to detect the married -> single transition
     address internal lastSpouse;
+    bool internal wasMarried;
+
+    // memory to ensure the spouse doesn't change 
     address internal spouse_snapshot;
     bool internal snapshot_taken;
 
@@ -47,6 +52,27 @@ contract TestTaxpayer is Taxpayer {
         }
     }
 
+    function echidna_pair_marriage_state_coherent() public view returns (bool) {
+        bool meM = getIsMarried();
+        bool otM = other.getIsMarried();
+
+        address meS = getSpouse();
+        address otS = other.getSpouse();
+
+        // case 1: both single -> both spouse pointers must be zero
+        if (!meM && !otM) {
+            return meS == address(0) && otS == address(0);
+        }
+
+        // case 2: both married -> must be married to each other
+        if (meM && otM) {
+            return meS == address(other) && otS == address(this);
+        }
+
+        // mixed states are invalid (one married, the other not)
+        return false;
+    }
+
     function echidna_no_multiple_marriages() public returns (bool) {
         if (getIsMarried()) {
             address sp = getSpouse();
@@ -80,7 +106,14 @@ contract TestTaxpayer is Taxpayer {
         }
     }
 
-    // helper to let echidna create asymmetric states quickly (optional but useful)
+    function echidna_divorce_resets_state() public view returns (bool) {
+        if (!getIsMarried()) {
+            return getSpouse() == address(0);
+        }
+        return true;
+    }
+
+    // helper to let echidna create asymmetric states quickly 
     function marryOtherOneWay() public {
         marry(address(other)); // only sets THIS side, other stays single -> should violate invariant
     }

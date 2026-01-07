@@ -65,17 +65,29 @@ function getIsMarried() public view returns (bool) { return isMarried; }
 }
 
 function _marryBack(address new_spouse) external {
-    require(Taxpayer(new_spouse).isContract(), "spouse not taxpayer");
-    require(!isMarried, "already married");
-    require(msg.sender == new_spouse, "only spouse can confirm");
-    spouse = new_spouse;
-    isMarried = true;
+  require(Taxpayer(new_spouse).isContract(), "spouse not taxpayer");
+  require(!isMarried, "already married");
+  require(msg.sender == new_spouse, "only spouse can confirm");
+  spouse = new_spouse;
+  isMarried = true;
 }
  
  function divorce() public {
-  spouse = address(0);
-  isMarried = false;
+    if (spouse != address(0)) {
+        Taxpayer(spouse)._divorceBack(address(this));
+    }
+    spouse = address(0);
+    isMarried = false;
  }
+
+ function _divorceBack(address ex) external {
+    require(isMarried, "not married");
+    require(msg.sender == ex, "only ex spouse can confirm");
+    require(spouse == ex, "not your spouse");
+
+    spouse = address(0);
+    isMarried = false;
+}
 
  /* Transfer part of tax allowance to own spouse */
  function transferAllowance(uint change) public {
