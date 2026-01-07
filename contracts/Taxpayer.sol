@@ -33,6 +33,7 @@ uint256 rev;
 
 function getSpouse() public view returns (address) { return spouse; }
 function getIsMarried() public view returns (bool) { return isMarried; }
+function getAge() public view returns (uint) {return age; }
 
 //Parents are taxpayers
  constructor(address p1, address p2) {
@@ -72,29 +73,34 @@ function _marryBack(address new_spouse) external {
   isMarried = true;
 }
  
- function divorce() public {
-    if (spouse != address(0)) {
-        Taxpayer(spouse)._divorceBack(address(this));
-    }
-    spouse = address(0);
-    isMarried = false;
- }
+function divorce() public {
+  if (spouse != address(0)) {
+      Taxpayer(spouse)._divorceBack(address(this));
+  }
+  spouse = address(0);
+  isMarried = false;
+}
 
- function _divorceBack(address ex) external {
-    require(isMarried, "not married");
-    require(msg.sender == ex, "only ex spouse can confirm");
-    require(spouse == ex, "not your spouse");
+function _divorceBack(address ex) external {
+  require(isMarried, "not married");
+  require(msg.sender == ex, "only ex spouse can confirm");
+  require(spouse == ex, "not your spouse");
 
-    spouse = address(0);
-    isMarried = false;
+  spouse = address(0);
+  isMarried = false;
 }
 
  /* Transfer part of tax allowance to own spouse */
- function transferAllowance(uint change) public {
-  tax_allowance = tax_allowance - change;
-  Taxpayer sp = Taxpayer(address(spouse));
-  sp.setTaxAllowance(sp.getTaxAllowance()+change);
- }
+function transferAllowance(uint change) public {
+  require(isMarried, "not married");
+  require(spouse != address(0), "no spouse");
+  require(change <= tax_allowance, "too much");
+  tax_allowance -= change;
+  Taxpayer(spouse).setTaxAllowance(
+      Taxpayer(spouse).getTaxAllowance() + change
+  );
+}
+
 
  function haveBirthday() public {
   age++;
@@ -102,6 +108,11 @@ function _marryBack(address new_spouse) external {
  
   function setTaxAllowance(uint ta) public {
     require(Taxpayer(msg.sender).isContract() || Lottery(msg.sender).isContract());
+    require(
+    msg.sender == address(this) ||
+    msg.sender == spouse,
+    "not authorized"
+    );
     tax_allowance = ta;
   }
   function getTaxAllowance() public view returns(uint) {

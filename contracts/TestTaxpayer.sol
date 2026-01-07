@@ -1,51 +1,92 @@
+// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.22;
 
 import "./Taxpayer.sol";
 
-// minimal interface: adapt if you used getters instead of public vars
+/*
+ * external caller model (pre-fix): used to simulate an unauthorized contract
+ * bypassing setTaxAllowance checks by spoofing isContract() == true.
+ */
+contract AttackerTaxpayer {
+    function isContract() external pure returns (bool) {
+        return true;
+    }
+
+    function attackSetAllowance(address victim, uint x) external {
+        Taxpayer(victim).setTaxAllowance(x);
+    }
+}
+
+/*
+ * minimal interface for calling into spouse/other taxpayer
+ */
 interface ITaxpayerView {
     function getIsMarried() external view returns (bool);
     function getSpouse() external view returns (address);
     function isContract() external view returns (bool);
+
+    function getTaxAllowance() external view returns (uint);
+    function getAge() external view returns (uint);
 }
 
 contract TestTaxpayer is Taxpayer {
-    Taxpayer internal other; // "the spouse" we can point to
+    // ======== environment ========
 
-    // memory to detect the married -> single transition
+    Taxpayer internal other;
+    AttackerTaxpayer internal attacker;
+
+    constructor() Taxpayer(address(0), address(0)) {
+        other = new Taxpayer(address(0), address(0));
+        attacker = new AttackerTaxpayer();
+    }
+
+    // ======== echidna-callable actions ========
+
+    function act_marry_other() external {
+        marry(address(other));
+    }
+
+    function act_divorce() external {
+        divorce();
+    }
+
+    function act_attack_set_allowance(uint x) external {
+        attacker.attackSetAllowance(address(this), x);
+    }
+
+    // historical wrapper used in earlier traces/screenshots
+    function marryOtherOneWay() public {
+        marry(address(other));
+    }
+
+    // ======== stateful memory (marriage) ========
+
     address internal lastSpouse;
-    bool internal wasMarried;
 
-    // memory to ensure the spouse doesn't change 
     address internal spouse_snapshot;
     bool internal snapshot_taken;
 
-    constructor() Taxpayer(address(0), address(0)) {
-        // create another taxpayer instance so echidna can produce asymmetry
-        other = new Taxpayer(address(0), address(0));
-    }
+    // ======== stateful memory (single allowance stability) ========
 
-    // echidna property: marriage must be symmetric
+    uint internal single_allowance_snapshot;
+    bool internal single_snapshot_taken;
+
+    // ======== properties: marriage ========
+
     function echidna_marriage_is_symmetric() public view returns (bool) {
-        // if i'm not married, invariant doesn't constrain me
-        if (!getIsMarried()) {
-            return true;
-        }
+        if (!getIsMarried()) return true;
 
-        // if i'm married, spouse must exist
-        if (getSpouse() == address(0)) {
-            return false;
-        }
+        address sp = getSpouse();
+        if (sp == address(0)) return false;
 
-        // spouse must behave like a taxpayer and agree i'm their spouse
-        // if the call fails (spouse not a taxpayer contract), treat as violation
-        try ITaxpayerView(spouse).getIsMarried() returns (bool spMarried) {
+        // spouse must agree that it is married and married to me
+        try ITaxpayerView(sp).getIsMarried() returns (bool spMarried) {
             if (!spMarried) return false;
         } catch {
             return false;
         }
 
-        try ITaxpayerView(spouse).getSpouse() returns (address spSpouse) {
+        try ITaxpayerView(sp).getSpouse() returns (address spSpouse) {
             return spSpouse == address(this);
         } catch {
             return false;
@@ -59,17 +100,14 @@ contract TestTaxpayer is Taxpayer {
         address meS = getSpouse();
         address otS = other.getSpouse();
 
-        // case 1: both single -> both spouse pointers must be zero
         if (!meM && !otM) {
             return meS == address(0) && otS == address(0);
         }
 
-        // case 2: both married -> must be married to each other
         if (meM && otM) {
             return meS == address(other) && otS == address(this);
         }
 
-        // mixed states are invalid (one married, the other not)
         return false;
     }
 
@@ -91,19 +129,19 @@ contract TestTaxpayer is Taxpayer {
     function echidna_spouse_stable_while_married() public returns (bool) {
         if (getIsMarried()) {
             address sp = getSpouse();
+
             if (!snapshot_taken) {
                 spouse_snapshot = sp;
                 snapshot_taken = true;
                 return true;
             }
-            // while married, spouse must not change
+
             return sp == spouse_snapshot;
-        } else {
-            // if not married, reset snapshot
-            snapshot_taken = false;
-            spouse_snapshot = address(0);
-            return true;
         }
+
+        snapshot_taken = false;
+        spouse_snapshot = address(0);
+        return true;
     }
 
     function echidna_divorce_resets_state() public view returns (bool) {
@@ -113,8 +151,45 @@ contract TestTaxpayer is Taxpayer {
         return true;
     }
 
-    // helper to let echidna create asymmetric states quickly 
-    function marryOtherOneWay() public {
-        marry(address(other)); // only sets THIS side, other stays single -> should violate invariant
+    // ======== properties: allowance pooling (part 2) ========
+
+    function echidna_pooling_total_is_constant_base5000() public view returns (bool) {
+        uint a = getTaxAllowance();
+
+        if (!getIsMarried()) {
+            return a <= DEFAULT_ALLOWANCE; // use == if you want stronger
+        }
+
+        address sp = getSpouse();
+        if (sp == address(0)) return false;
+
+        uint b = ITaxpayerView(sp).getTaxAllowance();
+
+        if (a > type(uint).max - b) return false;
+        return a + b == DEFAULT_ALLOWANCE * 2;
+    }
+
+    // security tripwire (part 2): detects arbitrary writes to tax_allowance
+    function echidna_allowance_is_bounded_part2() public view returns (bool) {
+        return getTaxAllowance() <= DEFAULT_ALLOWANCE * 2;
+    }
+
+    // validated property: pooling operations must have no effect while single
+    function echidna_pooling_is_gated_by_marriage() public returns (bool) {
+        if (!getIsMarried()) {
+            uint a = getTaxAllowance();
+
+            if (!single_snapshot_taken) {
+                single_allowance_snapshot = a;
+                single_snapshot_taken = true;
+                return true;
+            }
+
+            return a == single_allowance_snapshot;
+        }
+
+        single_snapshot_taken = false;
+        single_allowance_snapshot = 0;
+        return true;
     }
 }
