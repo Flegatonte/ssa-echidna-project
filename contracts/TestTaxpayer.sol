@@ -59,6 +59,28 @@ contract TestTaxpayer is Taxpayer {
         marry(address(other));
     }
 
+    function act_age_self() external {
+        haveBirthday();
+    }
+
+    function act_age_other() external {
+        other.haveBirthday();
+    }
+
+    function act_age_self_n(uint n) external {
+        uint k = n % 70; // cap: max 69 increments per call
+        for (uint i = 0; i < k; i++) {
+            haveBirthday();
+        }
+    }
+
+    function act_age_other_n(uint n) external {
+        uint k = n % 70;
+        for (uint i = 0; i < k; i++) {
+            other.haveBirthday();
+        }
+    }
+
     // ======== stateful memory (marriage) ========
 
     address internal lastSpouse;
@@ -85,7 +107,6 @@ contract TestTaxpayer is Taxpayer {
         } catch {
             return false;
         }
-
         try ITaxpayerView(sp).getSpouse() returns (address spSpouse) {
             return spSpouse == address(this);
         } catch {
@@ -153,7 +174,7 @@ contract TestTaxpayer is Taxpayer {
 
     // ======== properties: allowance pooling (part 2) ========
 
-    function echidna_pooling_total_is_constant_base5000() public view returns (bool) {
+    /*function echidna_pooling_total_is_constant_base5000() public view returns (bool) {
         uint a = getTaxAllowance();
 
         if (!getIsMarried()) {
@@ -167,7 +188,7 @@ contract TestTaxpayer is Taxpayer {
 
         if (a > type(uint).max - b) return false;
         return a + b == DEFAULT_ALLOWANCE * 2;
-    }
+    }*/
 
     // security tripwire (part 2): detects arbitrary writes to tax_allowance
     function echidna_allowance_is_bounded_part2() public view returns (bool) {
@@ -191,5 +212,30 @@ contract TestTaxpayer is Taxpayer {
         single_snapshot_taken = false;
         single_allowance_snapshot = 0;
         return true;
+    }
+
+    // ======== properties: allowance pooling based on age (part 3) ========
+    function echidna_pooling_total_is_constant_based_on_age()
+        public
+        view
+        returns (bool)
+    {
+        uint a = getTaxAllowance();
+        uint base = getAge() < 65 ? DEFAULT_ALLOWANCE : ALLOWANCE_OAP;
+
+        if (!getIsMarried()) {
+            return a <= base;
+        }
+
+        address sp = getSpouse();
+        if (sp == address(0)) return false;
+
+        uint b = ITaxpayerView(sp).getTaxAllowance();
+        uint baseSpouse = ITaxpayerView(sp).getAge() < 65
+            ? DEFAULT_ALLOWANCE
+            : ALLOWANCE_OAP;
+
+        if (a > type(uint).max - b) return false;
+        return a + b == base + baseSpouse;
     }
 }

@@ -104,6 +104,10 @@ function transferAllowance(uint change) public {
 
  function haveBirthday() public {
   age++;
+  // when entering OAP category, increase the couple's total by +2000
+  if (age == 65) {
+      tax_allowance += (ALLOWANCE_OAP - DEFAULT_ALLOWANCE); // +2000
+  }
  }
  
   function setTaxAllowance(uint ta) public {
