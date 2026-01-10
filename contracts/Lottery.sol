@@ -6,6 +6,7 @@ contract Lottery {
     address owner;
     mapping(address => bytes32) commits;
     mapping(address => uint) reveals;
+    mapping(address => bool) hasRevealed;
     address[] revealed;
 
     uint256 startTime;
@@ -22,11 +23,16 @@ contract Lottery {
         iscontract = true;
     }
 
+    // time source (production: block.timestamp, test: overridable)
+    function _now() internal view virtual returns (uint256) {
+        return block.timestamp;
+    }
+
     //If the lottery has not started, anyone can invoke a lottery.
     function startLottery() public {
         require(startTime == 0);
         //startTime current time. Users send their committed value
-        startTime = block.timestamp;
+        startTime = _now();
         //revealTime  time for revealing. User reveal their value
         revealTime = startTime + period;
         //endTime a winner can be computed
@@ -35,7 +41,7 @@ contract Lottery {
 
     //A taxpayer send his own commitment.
     function commit(bytes32 y) public {
-        require(block.timestamp >= startTime);
+        require(_now() >= startTime);
           // write-once per round
   require(commits[msg.sender] == bytes32(0), "already committed");
         commits[msg.sender] = y;
@@ -43,15 +49,18 @@ contract Lottery {
 
     //A valid taxpayer who sent his own commitment, sends the revealing value.
     function reveal(uint256 rev) public {
-        require(block.timestamp >= revealTime);
+        require(_now() >= revealTime);
+        require(!hasRevealed[msg.sender], "already revealed");
         require(keccak256(abi.encode(rev)) == commits[msg.sender]);
+
+        hasRevealed[msg.sender] = true;
         revealed.push(msg.sender);
         reveals[msg.sender] = uint(rev);
     }
 
     //Ends the lottery and compute the winner.
     function endLottery() public {
-        require(block.timestamp >= endTime);
+        require(_now() >= endTime);
         uint total = 0;
         for (uint i = 0; i < revealed.length; i++)
             total += reveals[revealed[i]];
