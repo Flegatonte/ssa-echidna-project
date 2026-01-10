@@ -6,6 +6,8 @@ import "./Taxpayer.sol";
 /*
  * external caller model (pre-fix): used to simulate an unauthorized contract
  * bypassing setTaxAllowance checks by spoofing isContract() == true.
+ *
+ * keep this only if you want a regression test for the access-control bug.
  */
 contract AttackerTaxpayer {
     function isContract() external pure returns (bool) {
@@ -50,6 +52,7 @@ contract TestTaxpayer is Taxpayer {
         divorce();
     }
 
+    // pre-fix attack surface: should FAIL before access-control fix, PASS after
     function act_attack_set_allowance(uint x) external {
         attacker.attackSetAllowance(address(this), x);
     }
@@ -59,6 +62,7 @@ contract TestTaxpayer is Taxpayer {
         marry(address(other));
     }
 
+    // age progression: expose existing transitions (reachability helper)
     function act_age_self() external {
         haveBirthday();
     }
@@ -81,19 +85,37 @@ contract TestTaxpayer is Taxpayer {
         }
     }
 
-    // ======== stateful memory (marriage) ========
+    // reachability helper for the divorce/allowance bug:
+    // marry -> transfer (positive) -> divorce
+    function act_scenario_dirty_then_divorce(uint x) external {
+        if (!getIsMarried()) {
+            marry(address(other));
+        }
 
+        // force a strictly positive transfer
+        uint a = getTaxAllowance();
+        if (a > 0) {
+            uint c = 1 + (x % a); // 1..a
+            transferAllowance(c);
+        }
+
+        divorce();
+    }
+
+    // ======== stateful memory (marriage-related) ========
+
+    // used by "no multiple marriages"
     address internal lastSpouse;
 
+    // used by "spouse stable while married"
     address internal spouse_snapshot;
     bool internal snapshot_taken;
 
-    // ======== stateful memory (single allowance stability) ========
-
+    // used by "pooling gated by marriage"
     uint internal single_allowance_snapshot;
     bool internal single_snapshot_taken;
 
-    // ======== properties: marriage ========
+    // ======== properties: marriage (Part 1) ========
 
     function echidna_marriage_is_symmetric() public view returns (bool) {
         if (!getIsMarried()) return true;
@@ -101,7 +123,6 @@ contract TestTaxpayer is Taxpayer {
         address sp = getSpouse();
         if (sp == address(0)) return false;
 
-        // spouse must agree that it is married and married to me
         try ITaxpayerView(sp).getIsMarried() returns (bool spMarried) {
             if (!spMarried) return false;
         } catch {
@@ -114,6 +135,7 @@ contract TestTaxpayer is Taxpayer {
         }
     }
 
+    // global coherence across (this, other)
     function echidna_pair_marriage_state_coherent() public view returns (bool) {
         bool meM = getIsMarried();
         bool otM = other.getIsMarried();
@@ -172,28 +194,17 @@ contract TestTaxpayer is Taxpayer {
         return true;
     }
 
-    // ======== properties: allowance pooling (part 2) ========
+    // ======== properties: pooling + access control (Part 2) ========
 
-    /*function echidna_pooling_total_is_constant_base5000() public view returns (bool) {
-        uint a = getTaxAllowance();
-
-        if (!getIsMarried()) {
-            return a <= DEFAULT_ALLOWANCE; // use == if you want stronger
-        }
-
-        address sp = getSpouse();
-        if (sp == address(0)) return false;
-
-        uint b = ITaxpayerView(sp).getTaxAllowance();
-
-        if (a > type(uint).max - b) return false;
-        return a + b == DEFAULT_ALLOWANCE * 2;
-    }*/
-
-    // security tripwire (part 2): detects arbitrary writes to tax_allowance
-    function echidna_allowance_is_bounded_part2() public view returns (bool) {
-        return getTaxAllowance() <= DEFAULT_ALLOWANCE * 2;
-    }
+    /*
+     * tripwire for the pre-fix access control bug:
+     * if setTaxAllowance can be called by an unauthorized contract, allowance can become arbitrary.
+     *
+     * NOTE: Part-2-specific. Enable only if your Part 2 spec guarantees this bound.
+     */
+    // function echidna_allowance_is_bounded_part2() public view returns (bool) {
+    //     return getTaxAllowance() <= DEFAULT_ALLOWANCE * 2;
+    // }
 
     // validated property: pooling operations must have no effect while single
     function echidna_pooling_is_gated_by_marriage() public returns (bool) {
@@ -214,14 +225,15 @@ contract TestTaxpayer is Taxpayer {
         return true;
     }
 
-    // ======== properties: allowance pooling based on age (part 3) ========
+    // ======== properties: age-based pooling (Part 3) ========
+
     function echidna_pooling_total_is_constant_based_on_age()
         public
         view
         returns (bool)
     {
         uint a = getTaxAllowance();
-        uint base = getAge() < 65 ? DEFAULT_ALLOWANCE : ALLOWANCE_OAP;
+        uint base = (getAge() < 65) ? DEFAULT_ALLOWANCE : ALLOWANCE_OAP;
 
         if (!getIsMarried()) {
             return a <= base;
@@ -230,12 +242,37 @@ contract TestTaxpayer is Taxpayer {
         address sp = getSpouse();
         if (sp == address(0)) return false;
 
-        uint b = ITaxpayerView(sp).getTaxAllowance();
-        uint baseSpouse = ITaxpayerView(sp).getAge() < 65
-            ? DEFAULT_ALLOWANCE
-            : ALLOWANCE_OAP;
+        ITaxpayerView t = ITaxpayerView(sp);
+        uint b = t.getTaxAllowance();
+        uint baseSpouse = (t.getAge() < 65) ? DEFAULT_ALLOWANCE : ALLOWANCE_OAP;
 
         if (a > type(uint).max - b) return false;
         return a + b == base + baseSpouse;
+    }
+
+    // ======== properties: divorce should restore bases (Part 3) ========
+
+    function echidna_single_state_has_base_allowance_age_based()
+        public
+        view
+        returns (bool)
+    {
+        if (getIsMarried()) return true;
+
+        uint baseMe = (getAge() < 65) ? DEFAULT_ALLOWANCE : ALLOWANCE_OAP;
+        return getTaxAllowance() == baseMe;
+    }
+
+    function echidna_other_single_state_has_base_allowance_age_based()
+        public
+        view
+        returns (bool)
+    {
+        if (other.getIsMarried()) return true;
+
+        uint baseOther = (other.getAge() < 65)
+            ? DEFAULT_ALLOWANCE
+            : ALLOWANCE_OAP;
+        return other.getTaxAllowance() == baseOther;
     }
 }
