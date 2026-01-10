@@ -12,15 +12,46 @@ import "./TestableLottery.sol";
  * we want per-participant behavior with stable participant addresses, so we use
  * small wrapper contracts: player1 and player2. then msg.sender is address(playerX).
  */
-contract Player {
+
+contract Player is Taxpayer {
     Lottery internal lot;
 
-    constructor(Lottery _lot) {
+    constructor(Lottery _lot) Taxpayer(address(0), address(0)) {
         lot = _lot;
+
+        // set age < 65 so this wrapper is an eligible participant
+        age = 30;
     }
 
     function commitSecret(uint256 secret) external {
         // commit = keccak(secret)
+
+        bytes32 h = keccak256(abi.encode(secret));
+        lot.commit(h);
+    }
+
+    function revealSecret(uint256 secret) external {
+        lot.reveal(secret);
+    }
+}
+
+/*
+ * senior player
+ * -------------
+ * a taxpayer-like participant with age >= 65, used to test the "under 65 only" rule.
+ * we make age deterministic in the constructor so echidna cannot "accidentally" make it pass.
+ */
+contract SeniorPlayer is Taxpayer {
+    Lottery internal lot;
+
+    constructor(Lottery _lot) Taxpayer(address(0), address(0)) {
+        lot = _lot;
+
+        // set age to a senior value; age is an internal var in Taxpayer, so we can write it here
+        age = 70;
+    }
+
+    function commitSecret(uint256 secret) external {
         bytes32 h = keccak256(abi.encode(secret));
         lot.commit(h);
     }
@@ -59,6 +90,8 @@ contract TestLottery {
     bool internal lastPostCloseWasClean = true;
     bool internal lastStartAfterCloseSucceeded = true;
 
+    SeniorPlayer internal senior;
+
     constructor() {
         // period = 1: revealTime = start+1, endTime = reveal+1
         // time is controlled via TestableLottery fake clock + warp()
@@ -66,6 +99,7 @@ contract TestLottery {
 
         player1 = new Player(lot);
         player2 = new Player(lot);
+        senior = new SeniorPlayer(lot);
 
         // start immediately so commit is reachable without needing startRound first
         lot.startLottery();
@@ -300,7 +334,7 @@ contract TestLottery {
      */
     function endRound() external {
         try lot.endLottery() {
-            (uint256 s,,) = lot.getTimes();
+            (uint256 s, , ) = lot.getTimes();
             if (s == 0) {
                 // round closed: state must be clean right now
                 lastPostCloseWasClean = _isCleanClosedState();
@@ -331,7 +365,6 @@ contract TestLottery {
         } catch {
             lastStartAfterCloseSucceeded = false;
         }
-
         pendingPostCloseCheck = false;
     }
 
@@ -351,4 +384,134 @@ contract TestLottery {
     {
         return lastPostCloseWasClean && lastStartAfterCloseSucceeded;
     }
+
+    /*
+     * property 12: lottery is restricted to under-65 participants
+     * ----------------------------------------------------------
+     * a participant with age >= 65 must not be able to commit.
+     * we enforce this as "no observable effects" on the senior address:
+     * - commit slot stays empty
+     * - hasCommitted flag stays false
+     *
+     * note: this property is expected to fail until Lottery.commit() enforces the age rule.
+     */
+    function echidna_only_under_65_can_commit() public returns (bool) {
+        // attempt a commit from a known senior participant
+        try senior.commitSecret(123456) {
+            // even if it "succeeds", it must not leave state behind
+        } catch {
+            // revert is acceptable; we still assert no state changes
+        }
+        bool ok = true;
+
+        // no commit must be recorded for the senior participant
+        ok = ok && (lot.getCommit(address(senior)) == bytes32(0));
+
+        // no observable "has committed" flag must be set
+        ok = ok && (lot.getHasCommitted(address(senior)) == false);
+
+        return ok;
+    }
+
+/*
+ * property 13: phase separation (commit/reveal windows)
+ * ----------------------------------------------------
+ * - commit only during [startTime, revealTime)
+ * - reveal only during [revealTime, endTime)
+ *
+ * outside their phase, calls must either revert or have no observable effects.
+ */
+function echidna_phase_separation() public returns (bool) {
+    bool ok = true;
+
+    (uint256 st, uint256 rt, uint256 et) = lot.getTimes();
+    uint256 nowT = lot.getTime();
+
+    // if not started, nothing to check
+    if (st == 0) return true;
+
+    // 1) commit after revealTime must not have effects (or must revert)
+    if (nowT < rt) {
+        try lot.warp(rt - nowT + 1) {} catch {}
+    }
+
+    bool commitSucceeded = true;
+    try player1.commitSecret(123) {} catch {
+        commitSucceeded = false;
+    }
+    if (commitSucceeded) {
+        // if the call did not revert, it must not have effects
+        ok = ok && (lot.getCommit(address(player1)) == bytes32(0));
+        ok = ok && (lot.getHasCommitted(address(player1)) == false);
+    }
+
+    // 2) reveal after endTime must not have effects (or must revert)
+    nowT = lot.getTime();
+    if (nowT < et) {
+        try lot.warp(et - nowT + 1) {} catch {}
+    }
+
+    bool revealSucceeded = true;
+    try player2.revealSecret(456) {} catch {
+        revealSucceeded = false;
+    }
+    if (revealSucceeded) {
+        ok = ok && (lot.getHasRevealed(address(player2)) == false);
+        ok = ok && (lot.getReveal(address(player2)) == 0);
+    }
+
+    return ok;
+}
+
+/*
+ * property 14: winner must be one of the revealed participants
+ * -----------------------------------------------------------
+ * if a round ends with at least one reveal, endLottery() must set winner
+ * to an address contained in revealed[] for that round.
+ *
+ * note: revealed[] is deleted during cleanup, so we snapshot it before closing.
+ */
+function echidna_winner_is_revealed_participant() public returns (bool) {
+    (uint256 st, uint256 rt, uint256 et) = lot.getTimes();
+
+    // if not started, nothing to check
+    if (st == 0) return true;
+
+    uint256 rlen = lot.revealedLength();
+
+    // winner is only meaningful if there is at least one reveal
+    if (rlen == 0) return true;
+
+    // move time beyond endTime so endLottery() is callable
+    uint256 nowT = lot.getTime();
+    if (nowT < et) {
+        try lot.warp(et - nowT + 1) {} catch {}
+    }
+
+    // snapshot revealed participants before endLottery() deletes the array
+    address[] memory snap = new address[](rlen);
+    for (uint256 i = 0; i < rlen; i++) {
+        snap[i] = lot.revealedAt(i);
+    }
+
+    // close the round; if it reverts here, it's a bug (given now >= endTime and rlen > 0)
+    bool endSucceeded = true;
+    try this.endRound() {} catch {
+        endSucceeded = false;
+    }
+    if (!endSucceeded) return false;
+
+    // winner must be one of the revealed addresses in the snapshot
+    address w = lot.getWinner();
+    bool found = false;
+    for (uint256 i = 0; i < rlen; i++) {
+        if (snap[i] == w) {
+            found = true;
+            break;
+        }
+    }
+
+    return found;
+}
+
 }

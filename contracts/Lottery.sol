@@ -25,6 +25,9 @@ contract Lottery {
 
     bool iscontract;
 
+    address public winner;
+
+
     // Initialize the registry with the lottery period.
     constructor(uint256 p) {
         period = p;
@@ -52,9 +55,19 @@ contract Lottery {
 
     // A taxpayer sends their own commitment.
     function commit(bytes32 y) public {
+        // participant must be a taxpayer contract
+        require(msg.sender.code.length > 0, "participant must be a contract");
+        require(Taxpayer(msg.sender).isContract(), "participant not taxpayer");
+                // lottery is reserved to under-65 participants
+        require(Taxpayer(msg.sender).getAge() < 65, "age >= 65");
+
         require(startTime != 0, "lottery not started");
         require(_now() >= startTime);
+        require(_now() < revealTime, "commit phase over");
+
         require(commits[msg.sender] == bytes32(0), "already committed");
+
+
 
         // track committers for THIS round (reliable cleanup list)
         if (committedRound[msg.sender] != roundId) {
@@ -70,7 +83,13 @@ contract Lottery {
 
     // A valid taxpayer who sent their commitment reveals the value.
     function reveal(uint256 rev) public {
+        require(msg.sender.code.length > 0, "participant must be a contract");
+        require(Taxpayer(msg.sender).isContract(), "participant not taxpayer");
+        require(Taxpayer(msg.sender).getAge() < 65, "age >= 65");
+
         require(_now() >= revealTime);
+        require(_now() < endTime, "reveal phase over");
+
         require(!hasRevealed[msg.sender], "already revealed");
         require(keccak256(abi.encode(rev)) == commits[msg.sender]);
 
@@ -89,6 +108,7 @@ contract Lottery {
             for (uint256 i = 0; i < revealed.length; i++) {
                 total += reveals[revealed[i]];
             }
+            winner = revealed[total % revealed.length];
             Taxpayer(revealed[total % revealed.length]).setTaxAllowance(7000);
         }
 
@@ -148,4 +168,7 @@ contract Lottery {
     function getHasCommitted(address a) external view returns (bool) {
         return hasCommitted[a];
     }
+
+    function getWinner() external view returns (address) { return winner; }
+
 }
