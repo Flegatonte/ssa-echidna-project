@@ -3,21 +3,8 @@ pragma solidity ^0.8.22;
 
 import "./Taxpayer.sol";
 import "./Lottery.sol";
+import "./AttackerTaxpayer.sol";
 
-/*
- * external caller model (pre-fix): used to simulate an unauthorized contract
- * bypassing setTaxAllowance checks by spoofing isContract() == true.
- *
- */
-contract AttackerTaxpayer {
-    function isContract() external pure returns (bool) {
-        return true;
-    }
-
-    function attackSetAllowance(address victim, uint x) external {
-        Taxpayer(victim).setTaxAllowance(x);
-    }
-}
 
 /*
  * minimal interface for calling into spouse/other taxpayer
