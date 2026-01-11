@@ -2,12 +2,12 @@
 pragma solidity ^0.8.22;
 
 import "./Taxpayer.sol";
+import "./Lottery.sol";
 
 /*
  * external caller model (pre-fix): used to simulate an unauthorized contract
  * bypassing setTaxAllowance checks by spoofing isContract() == true.
  *
- * keep this only if you want a regression test for the access-control bug.
  */
 contract AttackerTaxpayer {
     function isContract() external pure returns (bool) {
@@ -32,18 +32,25 @@ interface ITaxpayerView {
 }
 
 contract TestTaxpayer is Taxpayer {
-    // ======== environment ========
 
     Taxpayer internal other;
     AttackerTaxpayer internal attacker;
+    Lottery internal lot;
 
     constructor() Taxpayer(address(0), address(0)) {
         other = new Taxpayer(address(0), address(0));
         attacker = new AttackerTaxpayer();
+
+        // configure the lottery once in the constructor so echidna cannot mutate it mid-run
+        lot = new Lottery(1);
+
+        // important: Taxpayer.setLottery must be one-shot (require(lottery == address(0))).
+        // if it is not, echidna can still rewire the environment and invalidate the model.
+        setLottery(address(lot));
+        other.setLottery(address(lot));
     }
 
-    // ======== echidna-callable actions ========
-
+    // echidna-callable actions 
     function act_marry_other() external {
         marry(address(other));
     }
@@ -52,7 +59,6 @@ contract TestTaxpayer is Taxpayer {
         divorce();
     }
 
-    // pre-fix attack surface: should FAIL before access-control fix, PASS after
     function act_attack_set_allowance(uint x) external {
         attacker.attackSetAllowance(address(this), x);
     }
@@ -95,14 +101,14 @@ contract TestTaxpayer is Taxpayer {
         // force a strictly positive transfer
         uint a = getTaxAllowance();
         if (a > 0) {
-            uint c = 1 + (x % a); // 1..a
+            uint c = 1 + (x % a); 
             transferAllowance(c);
         }
 
         divorce();
     }
 
-    // ======== stateful memory (marriage-related) ========
+    // stateful memory (marriage-related) 
 
     // used by "no multiple marriages"
     address internal lastSpouse;
@@ -115,8 +121,9 @@ contract TestTaxpayer is Taxpayer {
     uint internal single_allowance_snapshot;
     bool internal single_snapshot_taken;
 
-    // ======== properties: marriage (Part 1) ========
-
+    // ----------------------------------------------------------- 
+    // properties: marriage (Part 1) 
+    // -----------------------------------------------------------
     function echidna_marriage_is_symmetric() public view returns (bool) {
         if (!getIsMarried()) return true;
 
@@ -128,6 +135,7 @@ contract TestTaxpayer is Taxpayer {
         } catch {
             return false;
         }
+
         try ITaxpayerView(sp).getSpouse() returns (address spSpouse) {
             return spSpouse == address(this);
         } catch {
@@ -193,18 +201,25 @@ contract TestTaxpayer is Taxpayer {
         }
         return true;
     }
-
-    // ======== properties: pooling + access control (Part 2) ========
+    // -----------------------------------------------------------
+    // properties: pooling + access control (Part 2) 
+    // -----------------------------------------------------------
 
     /*
-     * tripwire for the pre-fix access control bug:
-     * if setTaxAllowance can be called by an unauthorized contract, allowance can become arbitrary.
-     *
-     * NOTE: Part-2-specific. Enable only if your Part 2 spec guarantees this bound.
-     */
-    // function echidna_allowance_is_bounded_part2() public view returns (bool) {
-    //     return getTaxAllowance() <= DEFAULT_ALLOWANCE * 2;
-    // }
+ * part 2 security invariant:
+ * the tax allowance must never exceed the maximum value
+ * reachable through legitimate operations in Part 2.
+ *
+ * before age-based rules (Part 3), the maximum pooled allowance
+ * for a married couple is 2 * DEFAULT_ALLOWANCE.
+ *
+ * this property is intentionally removed / disabled in Part 3,
+ * because ALLOWANCE_OAP may legitimately exceed this bound.
+ *
+function echidna_allowance_is_bounded_part_2() public view returns (bool) {
+    return getTaxAllowance() <= DEFAULT_ALLOWANCE * 2;
+}
+*/
 
     // validated property: pooling operations must have no effect while single
     function echidna_pooling_is_gated_by_marriage() public returns (bool) {
@@ -224,8 +239,9 @@ contract TestTaxpayer is Taxpayer {
         single_allowance_snapshot = 0;
         return true;
     }
-
-    // ======== properties: age-based pooling (Part 3) ========
+    // -----------------------------------------------------------
+    // properties: age-based pooling (Part 3) 
+    // -----------------------------------------------------------
 
     function echidna_pooling_total_is_constant_based_on_age()
         public
@@ -236,7 +252,7 @@ contract TestTaxpayer is Taxpayer {
         uint base = (getAge() < 65) ? DEFAULT_ALLOWANCE : ALLOWANCE_OAP;
 
         if (!getIsMarried()) {
-            return a <= base;
+            return a == base;
         }
 
         address sp = getSpouse();
@@ -250,7 +266,9 @@ contract TestTaxpayer is Taxpayer {
         return a + b == base + baseSpouse;
     }
 
-    // ======== properties: divorce should restore bases (Part 3) ========
+    // -----------------------------------------------------------
+    // properties: divorce should restore bases (Part 3) 
+    // -----------------------------------------------------------
 
     function echidna_single_state_has_base_allowance_age_based()
         public

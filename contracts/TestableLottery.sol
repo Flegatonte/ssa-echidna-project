@@ -7,17 +7,19 @@ contract TestableLottery is Lottery {
     uint256 internal fakeNow;
 
     constructor(uint256 p) Lottery(p) {
-        // must be non-zero, because startTime==0 is the "not started" sentinel
+        // fake time must start non-zero because startTime == 0 is the "closed / not started" sentinel
         fakeNow = 1;
     }
 
     function _now() internal view override returns (uint256) {
-        // when the lottery is closed (startTime == 0), we clamp the observable time
-        // to a "start-safe" maximum so startLottery() cannot overflow when computing:
+        // echidna can warp with deltas close to 2^256, which can push fakeNow near uint256.max.
+        // in solidity 0.8+, arithmetic overflow reverts, so startLottery() could revert when doing:
         //   revealTime = startTime + period
         //   endTime    = revealTime + period
         //
-        // this avoids artificial reverts caused by echidna warping fake time near uint256.max.
+        // this cannot happen with real block.timestamp, but it can happen with a fake clock.
+        // so: when the lottery is closed, clamp the *observable* time to a safe max.
+        //
         // when the lottery is running, we do not clamp, otherwise endLottery() could become
         // unreachable if endTime is close to uint256.max.
         if (startTime == 0) {
@@ -31,12 +33,11 @@ contract TestableLottery is Lottery {
     /*
      * warp fake time forward
      * ----------------------
-     * we keep warp simple: it only advances the raw clock (fakeNow) with saturating arithmetic.
-     * any "start-safety" is enforced by _now() when the lottery is closed, not by warp().
+     * warp only updates the raw clock (fakeNow) using saturating arithmetic.
+     * any "start safety" is handled in _now() when the lottery is closed.
      *
-     * rationale:
-     * - we must allow time to reach endTime while running, otherwise endLottery() can be blocked.
-     * - we must prevent overflow in startLottery() after a close, even if no further warp() occurs.
+     * that is necessary because while running, we must allow time to reach endTime, otherwise endLottery() could be blocked.
+     * moreover, after a close, we still want startLottery() to be safe even if no further warp() happens.
      */
     function warp(uint256 delta) external {
         // saturating add: fakeNow = min(fakeNow + delta, uint256.max)
